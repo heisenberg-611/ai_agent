@@ -38,60 +38,72 @@ def main():
         )
     ]
 
+    MAX_ITERATIONS = 20
+
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=messages,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                tools=[available_functions],
-        ),
-    )
-    except Exception as e:
-        print(f"Error: {e}")
-        return  # EXIT main() cleanly
-
-
-    # Ensure usage metadata exists
-    if response.usage_metadata is None:
-        raise RuntimeError("Failed to retrieve token usage metadata.")
-
-    # Verbose output
-    if args.verbose:
-        print(f"User prompt: {args.user_prompt}")
-        print(f"Prompt tokens: {response.usage_metadata.prompt_token_count}")
-        print(f"Response tokens: {response.usage_metadata.candidates_token_count}")
-
-    # Always print the model response
-    # Output logic: function calls OR text
-    function_results = []
-
-    if response.function_calls:
-        for function_call in response.function_calls:
-            function_call_result = call_function(
-                function_call,
-                verbose=args.verbose
+        for _ in range(MAX_ITERATIONS):
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    tools=[available_functions],
+                ),
             )
 
-        # Safety checks (required by assignment)
-        if not function_call_result.parts:
-            raise RuntimeError("Function call returned no parts")
+            # Add all model candidates to the conversation
+            finished = False
+            for candidate in response.candidates:
+                messages.append(candidate.content)
 
-        function_response = function_call_result.parts[0].function_response
-        if function_response is None:
-            raise RuntimeError("Missing function response")
+            # If no function calls AND text exists → done
+            if not response.function_calls and response.text:
+                print("Final response:")
+                print(response.text)
+                finished = True
 
-        if function_response.response is None:
-            raise RuntimeError("Missing function response payload")
+            if finished:
+                break
 
-        function_results.append(function_call_result.parts[0])
+            # Handle tool calls
+            function_results = []
 
-        if args.verbose:
-            print(f"-> {function_response.response}")
-    else:
-        print(response.text)
+            if response.function_calls:
+                for function_call in response.function_calls:
+                    function_call_result = call_function(
+                        function_call,
+                        verbose=args.verbose
+                    )
 
+                    if not function_call_result.parts:
+                        raise RuntimeError("Function call returned no parts")
 
+                    function_response = function_call_result.parts[0].function_response
+                    if function_response is None:
+                        raise RuntimeError("Missing function response")
+
+                    if function_response.response is None:
+                        raise RuntimeError("Missing function response payload")
+
+                    function_results.append(function_call_result.parts[0])
+
+                    if args.verbose:
+                        print(f"-> {function_response.response}")
+
+            # Add tool results back into the conversation
+            if function_results:
+                messages.append(
+                    types.Content(
+                        role="user",
+                        parts=function_results,
+                    )
+                )
+
+        else:
+            print("Error: Reached maximum number of iterations without finishing.")
+
+    except Exception as e:
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
